@@ -43,15 +43,6 @@ python bot.py
 - `!removechannel` — Entfernt den festen Benachrichtigungskanal und nutzt wieder den Standardkanal.
 - `!checkupdates` — Checks Steam news manually for tracked games.
 
-## Running in the Cloud (GitHub Actions)
-
-The repository includes a workflow (`.github/workflows/run-bot.yml`) that keeps the bot running continuously using GitHub Actions — no external server required.
-
-**How it works:**
-- A scheduled job starts every 6 hours and runs the bot for ~5 h 50 min.
-- The SQLite database (`steam_watchlist.db`) is persisted between runs via the Actions cache, so tracked games and channel settings survive restarts.
-- There is a brief restart window of ~10 minutes every 6 hours.
-- You can also trigger a manual run at any time from the **Actions** tab.
 
 **Setup:**
 1. Go to **Settings → Secrets and variables → Actions** in your repository.
