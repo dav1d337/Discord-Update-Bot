@@ -43,7 +43,7 @@ class SteamTracker(commands.Cog):
         updates = []
         for game in tracked_games:
             appid = game["appid"]
-            latest = await self.fetch_latest_news(appid)
+            latest = await self.fetch_latest_news(appid, feeds="patchnotes")
             if not latest:
                 continue
 
@@ -72,7 +72,7 @@ class SteamTracker(commands.Cog):
         await self.bot.wait_until_ready()
         await self.ensure_session()
 
-    async def fetch_latest_news(self, appid: str) -> dict | None:
+    async def fetch_latest_news(self, appid: str, feeds: str | None = None) -> dict | None:
         params = {
             "appid": appid,
             "count": 3,
@@ -80,6 +80,8 @@ class SteamTracker(commands.Cog):
             "format": "json",
             "key": self.api_key,
         }
+        if feeds:
+            params["feeds"] = feeds
         try:
             await self.ensure_session()
             async with self.session.get(STEAM_NEWS_URL, params=params, timeout=20) as response:
@@ -266,11 +268,11 @@ class SteamTracker(commands.Cog):
                     inline=False,
                 )
                 try:
-                    await channel.send(embed=embed)
+                    await channel.send(content=f"Neues Update verfügbar für **{game.get('name') or game['appid']}**!", embed=embed)
                 except discord.HTTPException as error:
                     if "Invalid Form Body" in str(error) and "embeds.0.url" in str(error):
                         embed.url = None
-                        await channel.send(embed=embed)
+                        await channel.send(content=f"Neues Update verfügbar für **{game.get('name') or game['appid']}**!", embed=embed)
                     else:
                         raise
 
@@ -304,18 +306,18 @@ class SteamTracker(commands.Cog):
                 return
 
             name = await self.fetch_app_title(appid) or "Unbekannt"
-            latest = await self.fetch_latest_news(appid) if self.api_key else None
+            latest = await self.fetch_latest_news(appid, feeds="patchnotes") if self.api_key else None
             if latest:
                 self.database.add_game(appid, name=name, last_news_id=latest.get("gid"), last_news_date=latest.get("date", 0))
                 await ctx.reply(
-                    f"Spiel {name} ({appid}) hinzugefügt und Basis-News gesetzt. Ich melde neue Steam-News, sobald sie erscheinen.",
+                    f"Spiel {name} ({appid}) hinzugefügt und Basis-Update gesetzt. Ich melde neue downloadbare Updates, sobald sie erscheinen.",
                     mention_author=False,
                 )
                 return
 
             self.database.add_game(appid, name=name)
             await ctx.reply(
-                f"Spiel {name} ({appid}) hinzugefügt. Es wurden aktuell keine Steam-News gefunden oder die API ist noch nicht konfiguriert.",
+                f"Spiel {name} ({appid}) hinzugefügt. Es wurden aktuell keine downloadbaren Updates gefunden oder die API ist noch nicht konfiguriert.",
                 mention_author=False,
             )
             return
@@ -344,18 +346,18 @@ class SteamTracker(commands.Cog):
             await ctx.reply(f"AppID {appid} ({name}) wird bereits verfolgt.", mention_author=False)
             return
 
-        latest = await self.fetch_latest_news(appid) if self.api_key else None
+        latest = await self.fetch_latest_news(appid, feeds="patchnotes") if self.api_key else None
         if latest:
             self.database.add_game(appid, name=name, last_news_id=latest.get("gid"), last_news_date=latest.get("date", 0))
             await ctx.reply(
-                f"Spiel {name} ({appid}) hinzugefügt und Basis-News gesetzt. Ich melde neue Steam-News, sobald sie erscheinen.",
+                f"Spiel {name} ({appid}) hinzugefügt und Basis-Update gesetzt. Ich melde neue downloadbare Updates, sobald sie erscheinen.",
                 mention_author=False,
             )
             return
 
         self.database.add_game(appid, name=name)
         await ctx.reply(
-            f"Spiel {name} ({appid}) hinzugefügt. Es wurden aktuell keine Steam-News gefunden oder die API ist noch nicht konfiguriert.",
+            f"Spiel {name} ({appid}) hinzugefügt. Es wurden aktuell keine downloadbaren Updates gefunden oder die API ist noch nicht konfiguriert.",
             mention_author=False,
         )
 
@@ -502,7 +504,7 @@ class SteamTracker(commands.Cog):
             await ctx.reply("Der Steam API-Schlüssel ist nicht gesetzt. Bitte füge STEAM_API_KEY zur .env hinzu.", mention_author=False)
             return
 
-        await ctx.reply("Prüfe aktuelle Steam-News für verfolgte Spiele...", mention_author=False)
+        await ctx.reply("Prüfe aktuelle downloadbare Updates für verfolgte Spiele...", mention_author=False)
         tracked_games = self.database.list_games()
         if not tracked_games:
             await ctx.reply("Es sind keine Spiele zum Prüfen hinterlegt.", mention_author=False)
@@ -510,7 +512,7 @@ class SteamTracker(commands.Cog):
 
         updates = []
         for game in tracked_games:
-            latest = await self.fetch_latest_news(game["appid"])
+            latest = await self.fetch_latest_news(game["appid"], feeds="patchnotes")
             if not latest:
                 continue
 
@@ -520,14 +522,14 @@ class SteamTracker(commands.Cog):
                 updates.append((game, latest))
 
         if not updates:
-            await ctx.reply("Keine neuen Steam-News für die verfolgten Spiele gefunden.", mention_author=False)
+            await ctx.reply("Keine neuen downloadbaren Updates für die verfolgten Spiele gefunden.", mention_author=False)
             return
 
         for game, latest in updates:
             link = self.get_news_url(latest, game["appid"])
             embed = discord.Embed(
                 title=f"Steam update: {game.get('name') or game['appid']}",
-                description=latest.get("title", "Neue News verfügbar."),
+                description=latest.get("title", "Neues Update verfügbar."),
                 color=0x1B2838,
             )
             self.safe_set_embed_url(embed, link)
@@ -547,10 +549,10 @@ class SteamTracker(commands.Cog):
                 embed.set_thumbnail(url=image)
             embed.add_field(name="Link", value=self.format_link_field(link), inline=False)
             try:
-                await ctx.send(embed=embed)
+                await ctx.send(content=f"Neues Update verfügbar für **{game.get('name') or game['appid']}**!", embed=embed)
             except discord.HTTPException as error:
                 if "Invalid Form Body" in str(error) and "embeds.0.url" in str(error):
                     embed.url = None
-                    await ctx.send(embed=embed)
+                    await ctx.send(content=f"Neues Update verfügbar für **{game.get('name') or game['appid']}**!", embed=embed)
                 else:
                     raise
