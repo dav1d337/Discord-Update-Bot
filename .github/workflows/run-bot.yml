@@ -2,9 +2,14 @@ name: Run Discord Bot
 
 on:
   schedule:
-    # Runs every 6 hours. The bot process runs for ~5hr 50min so there is only
-    # a brief (~10 min) restart window between consecutive runs.
-    - cron: '0 */6 * * *'
+    # 8–9 am UTC
+    - cron: '0 8 * * *'
+    # 1–2 pm UTC
+    - cron: '0 13 * * *'
+    # 6–7 pm UTC
+    - cron: '0 18 * * *'
+    # 9–10 pm UTC
+    - cron: '0 21 * * *'
   # Allow manual starts / restarts from the Actions tab.
   workflow_dispatch:
 
@@ -13,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Stay just under the 6-hour GitHub Actions job limit.
-    timeout-minutes: 355
+    # Each window is 1 hour; stay slightly under to allow cache-save to run.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -40,12 +45,12 @@ jobs:
       - name: Install dependencies
         run: pip install --no-cache-dir -r requirements.txt
 
-      # Run the bot for 5hr 50min (21000 s), then let the job finish
-      # so the cache-save step can persist the updated database.
+      # Run the bot for 55 min (3300 s) so the cache-save step can persist the
+      # updated database before the job times out.
       # `|| true` prevents a non-zero exit code from timeout from failing
       # the workflow (exit code 124 = timed out normally).
       - name: Run bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
-        run: timeout 21000 python bot.py || true
+        run: timeout 3300 python bot.py || true
