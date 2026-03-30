@@ -1,0 +1,56 @@
+name: Run Discord Bot
+
+on:
+  schedule:
+    # 8–9 am UTC
+    - cron: '0 8 * * *'
+    # 1–2 pm UTC
+    - cron: '0 13 * * *'
+    # 6–7 pm UTC
+    - cron: '0 18 * * *'
+    # 9–10 pm UTC
+    - cron: '0 21 * * *'
+  # Allow manual starts / restarts from the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Each window is 1 hour; stay slightly under to allow cache-save to run.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Restore the SQLite database from the most recent cached run so that
+      # tracked games and notification channels survive across restarts.
+      - name: Restore database cache
+        uses: actions/cache@v4
+        with:
+          path: steam_watchlist.db
+          # A unique key per run ensures the post-job save always writes a
+          # fresh entry; restore-keys picks up the latest existing cache.
+          key: steam-db-${{ github.run_id }}
+          restore-keys: |
+            steam-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      # Run the bot for 55 min (3300 s) so the cache-save step can persist the
+      # updated database before the job times out.
+      # `|| true` prevents a non-zero exit code from timeout from failing
+      # the workflow (exit code 124 = timed out normally).
+      - name: Run bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+        run: timeout 3300 python bot.py || true
