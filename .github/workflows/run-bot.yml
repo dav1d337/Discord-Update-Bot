@@ -6,8 +6,8 @@ on:
     - cron: '0 8 * * *'
     # 1–2 pm UTC
     - cron: '0 13 * * *'
-    # 6–7 pm UTC
-    - cron: '0 18 * * *'
+    - cron: '0 17 * * *'
+    - cron: '0 19 * * *'
     # 9–10 pm UTC
     - cron: '0 21 * * *'
   # Allow manual starts / restarts from the Actions tab.
