@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import discord
 from discord.ext import commands
@@ -7,6 +8,12 @@ from db import SteamDatabase
 from steam_tracker import SteamTracker
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY")
@@ -19,10 +26,10 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    print("Steam update tracker is ready.")
-    print("Loaded cogs:", list(bot.cogs.keys()))
-    print("Available commands:", [c.name for c in bot.commands])
+    logger.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
+    logger.info("Steam update tracker is ready.")
+    logger.info("Loaded cogs: %s", list(bot.cogs.keys()))
+    logger.info("Available commands: %s", [c.name for c in bot.commands])
 
 
 @bot.event
@@ -41,23 +48,23 @@ async def on_command_error(ctx, error):
         await ctx.reply(str(error), mention_author=False)
         return
 
-    print(f"Command error in {ctx.command}: {error}")
+    logger.error("Command error in %s: %s", ctx.command, error)
 
 
 async def main():
     database = SteamDatabase("steam_watchlist.db")
     database.init_db()
     tracker = SteamTracker(bot, database, STEAM_API_KEY)
-    print("Created SteamTracker instance:", tracker)
-    print("Is Cog instance:", isinstance(tracker, commands.Cog))
+    logger.info("Created SteamTracker instance: %s", tracker)
+    logger.info("Is Cog instance: %s", isinstance(tracker, commands.Cog))
     try:
         await bot.add_cog(tracker)
     except Exception as exc:
-        print("Failed to load SteamTracker cog:", exc)
+        logger.exception("Failed to load SteamTracker cog: %s", exc)
         raise
 
-    print("Cogs loaded on startup:", list(bot.cogs.keys()))
-    print("Commands loaded on startup:", [c.name for c in bot.commands])
+    logger.info("Cogs loaded on startup: %s", list(bot.cogs.keys()))
+    logger.info("Commands loaded on startup: %s", [c.name for c in bot.commands])
 
     if not DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Add it to .env before running the bot.")

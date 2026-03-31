@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import re
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import aiohttp
@@ -10,6 +12,37 @@ from db import SteamDatabase
 STEAM_NEWS_URL = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/"
 STEAM_STORE_SEARCH_URL = "https://store.steampowered.com/api/storesearch"
 STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
+
+logger = logging.getLogger(__name__)
+
+# Heuristics to identify Steam news that usually represent real downloadable updates.
+POSITIVE_UPDATE_KEYWORDS = {
+    "patch notes",
+    "patchnotes",
+    "patch",
+    "update",
+    "hotfix",
+    "changelog",
+    "version",
+    "build",
+    "download",
+    "client update",
+}
+NEGATIVE_UPDATE_KEYWORDS = {
+    "sale",
+    "discount",
+    "event",
+    "tournament",
+    "stream",
+    "livestream",
+    "soundtrack",
+    "merch",
+    "artwork",
+    "screenshot",
+    "community hub",
+    "maintenance notice",
+}
+UPDATE_TAG_HINTS = {"patchnotes", "patchnote", "update", "updates", "product update"}
 
 class SteamTracker(commands.Cog):
     def __init__(self, bot: commands.Bot, database: SteamDatabase, steam_api_key: str | None):
@@ -28,6 +61,7 @@ class SteamTracker(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         if not self.check_updates_loop.is_running():
+            self.log_tracked_games_snapshot()
             await self.check_updates_once()
             self.check_updates_loop.start()
 
@@ -43,17 +77,27 @@ class SteamTracker(commands.Cog):
         updates = []
         for game in tracked_games:
             appid = game["appid"]
-            latest = await self.fetch_latest_news(appid)
+            latest = await self.find_latest_relevant_update(game)
             if not latest:
                 continue
 
             stored_last_id = game["last_news_id"]
             if stored_last_id is None or stored_last_id == "":
-                self.database.update_game_news(appid, latest["gid"], latest["date"], latest.get("title"))
+                self.database.update_game_news(
+                    appid,
+                    latest.get("gid"),
+                    latest.get("date", 0),
+                    last_news_title=latest.get("title"),
+                )
                 continue
 
-            if latest["gid"] != stored_last_id and latest["date"] > (game["last_news_date"] or 0):
-                self.database.update_game_news(appid, latest["gid"], latest["date"], latest.get("title"))
+            if self.is_news_new_for_game(latest, game):
+                self.database.update_game_news(
+                    appid,
+                    latest.get("gid"),
+                    latest.get("date", 0),
+                    last_news_title=latest.get("title"),
+                )
                 updates.append((game, latest))
 
         if updates:
@@ -73,9 +117,13 @@ class SteamTracker(commands.Cog):
         await self.ensure_session()
 
     async def fetch_latest_news(self, appid: str) -> dict | None:
+        newsitems = await self.fetch_recent_news(appid, count=3)
+        return newsitems[0] if newsitems else None
+
+    async def fetch_recent_news(self, appid: str, count: int = 10) -> list[dict]:
         params = {
             "appid": appid,
-            "count": 3,
+            "count": count,
             "maxlength": 300,
             "format": "json",
             "key": self.api_key,
@@ -84,18 +132,116 @@ class SteamTracker(commands.Cog):
             await self.ensure_session()
             async with self.session.get(STEAM_NEWS_URL, params=params, timeout=20) as response:
                 if response.status != 200:
-                    return None
+                    logger.warning("Steam news request failed for appid %s with status %s", appid, response.status)
+                    return []
                 data = await response.json()
         except asyncio.TimeoutError:
-            return None
-        except aiohttp.ClientError:
-            return None
+            logger.warning("Steam news request timed out for appid %s", appid)
+            return []
+        except aiohttp.ClientError as error:
+            logger.warning("Steam news request failed for appid %s: %s", appid, error)
+            return []
 
         newsitems = data.get("appnews", {}).get("newsitems", [])
+        if not isinstance(newsitems, list):
+            return []
+        return newsitems
+
+    def compose_news_text(self, item: dict) -> str:
+        tags = item.get("tags")
+        joined_tags = ""
+        if isinstance(tags, list):
+            joined_tags = " ".join(str(tag) for tag in tags)
+        elif isinstance(tags, str):
+            joined_tags = tags
+
+        parts = [
+            str(item.get("title") or ""),
+            str(item.get("contents") or ""),
+            str(item.get("feedlabel") or ""),
+            str(item.get("feedname") or ""),
+            str(item.get("url") or ""),
+            joined_tags,
+        ]
+        return " ".join(parts).lower()
+
+    def is_download_update_news(self, item: dict) -> bool:
+        tags = item.get("tags")
+        if isinstance(tags, list):
+            lowered_tags = {str(tag).lower() for tag in tags}
+        elif isinstance(tags, str):
+            lowered_tags = {tags.lower()}
+        else:
+            lowered_tags = set()
+
+        if lowered_tags.intersection(UPDATE_TAG_HINTS):
+            return True
+
+        text = self.compose_news_text(item)
+        has_positive = any(keyword in text for keyword in POSITIVE_UPDATE_KEYWORDS)
+        has_negative = any(keyword in text for keyword in NEGATIVE_UPDATE_KEYWORDS)
+
+        if has_positive and not has_negative:
+            return True
+
+        # Keep update-oriented posts even if they contain event wording.
+        if has_positive and ("patch" in text or "hotfix" in text or "changelog" in text):
+            return True
+
+        return False
+
+    def is_news_new_for_game(self, news: dict, game: dict) -> bool:
+        news_gid = str(news.get("gid") or "")
+        news_date = int(news.get("date") or 0)
+        stored_gid = str(game.get("last_news_id") or "")
+        stored_date = int(game.get("last_news_date") or 0)
+
+        if not news_gid:
+            return False
+        if news_gid == stored_gid:
+            return False
+        return news_date >= stored_date
+
+    async def find_latest_relevant_update(self, game: dict) -> dict | None:
+        appid = str(game["appid"])
+        newsitems = await self.fetch_recent_news(appid, count=10)
         if not newsitems:
             return None
 
-        return newsitems[0]
+        stored_gid = str(game.get("last_news_id") or "")
+        stored_date = int(game.get("last_news_date") or 0)
+        for item in newsitems:
+            if not self.is_download_update_news(item):
+                continue
+
+            candidate_gid = str(item.get("gid") or "")
+            candidate_date = int(item.get("date") or 0)
+            if not candidate_gid:
+                continue
+            if stored_gid and candidate_gid == stored_gid:
+                continue
+            if stored_date and candidate_date < stored_date:
+                continue
+            return item
+        return None
+
+    def format_news_date(self, timestamp: int | None) -> str:
+        if not timestamp:
+            return "n/a"
+        return datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat()
+
+    def log_tracked_games_snapshot(self) -> None:
+        tracked_games = self.database.list_games()
+        logger.info("Tracked games on startup: %d", len(tracked_games))
+        for game in tracked_games:
+            logger.info(
+                "Tracked game appid=%s name=%s last_news_id=%s last_news_date=%s last_news_title=%s",
+                game.get("appid"),
+                game.get("name") or "",
+                game.get("last_news_id") or "",
+                self.format_news_date(game.get("last_news_date")),
+                game.get("last_news_title") or "",
+            )
 
     async def fetch_app_title(self, appid: str) -> str | None:
         params = {
@@ -232,6 +378,35 @@ class SteamTracker(commands.Cog):
                 return match.group(1)
         return None
 
+    def build_update_embed(self, game: dict, latest: dict) -> discord.Embed:
+        link = self.get_news_url(latest, game["appid"])
+        embed = discord.Embed(
+            title=f"Steam update: {game.get('name') or game['appid']}",
+            description=latest.get("title", "Neue News verfügbar."),
+            color=0x1B2838,
+        )
+        self.safe_set_embed_url(embed, link)
+        embed.add_field(name="AppID", value=game["appid"], inline=True)
+        embed.add_field(
+            name="Published",
+            value=f"<t:{latest.get('date')}:f>" if latest.get("date") else "Unbekannt",
+            inline=True,
+        )
+        embed.add_field(
+            name="Size",
+            value=self.format_update_size(latest.get("size") or latest.get("bytes")),
+            inline=True,
+        )
+        image = self.extract_news_image(latest)
+        if image:
+            embed.set_thumbnail(url=image)
+        embed.add_field(
+            name="Link",
+            value=self.format_link_field(link),
+            inline=False,
+        )
+        return embed
+
     async def broadcast_updates(self, updates: list[tuple[dict, dict]]) -> None:
         for guild in self.bot.guilds:
             channel = await self.get_notification_channel(guild)
@@ -239,32 +414,7 @@ class SteamTracker(commands.Cog):
                 continue
 
             for game, latest in updates:
-                link = self.get_news_url(latest, game["appid"])
-                embed = discord.Embed(
-                    title=f"Steam update: {game.get('name') or game['appid']}",
-                    description=latest.get("title", "Neue News verfügbar."),
-                    color=0x1B2838,
-                )
-                self.safe_set_embed_url(embed, link)
-                embed.add_field(name="AppID", value=game["appid"], inline=True)
-                embed.add_field(
-                    name="Published",
-                    value=f"<t:{latest.get('date')}:f>" if latest.get("date") else "Unbekannt",
-                    inline=True,
-                )
-                embed.add_field(
-                    name="Size",
-                    value=self.format_update_size(latest.get("size") or latest.get("bytes")),
-                    inline=True,
-                )
-                image = self.extract_news_image(latest)
-                if image:
-                    embed.set_thumbnail(url=image)
-                embed.add_field(
-                    name="Link",
-                    value=self.format_link_field(link),
-                    inline=False,
-                )
+                embed = self.build_update_embed(game, latest)
                 try:
                     await channel.send(embed=embed)
                 except discord.HTTPException as error:
@@ -304,9 +454,15 @@ class SteamTracker(commands.Cog):
                 return
 
             name = await self.fetch_app_title(appid) or "Unbekannt"
-            latest = await self.fetch_latest_news(appid) if self.api_key else None
+            latest = await self.find_latest_relevant_update({"appid": appid, "last_news_id": "", "last_news_date": 0}) if self.api_key else None
             if latest:
-                self.database.add_game(appid, name=name, last_news_id=latest.get("gid"), last_news_date=latest.get("date", 0))
+                self.database.add_game(
+                    appid,
+                    name=name,
+                    last_news_id=latest.get("gid"),
+                    last_news_date=latest.get("date", 0),
+                    last_news_title=latest.get("title"),
+                )
                 await ctx.reply(
                     f"Spiel {name} ({appid}) hinzugefügt und Basis-News gesetzt. Ich melde neue Steam-News, sobald sie erscheinen.",
                     mention_author=False,
@@ -344,9 +500,15 @@ class SteamTracker(commands.Cog):
             await ctx.reply(f"AppID {appid} ({name}) wird bereits verfolgt.", mention_author=False)
             return
 
-        latest = await self.fetch_latest_news(appid) if self.api_key else None
+        latest = await self.find_latest_relevant_update({"appid": appid, "last_news_id": "", "last_news_date": 0}) if self.api_key else None
         if latest:
-            self.database.add_game(appid, name=name, last_news_id=latest.get("gid"), last_news_date=latest.get("date", 0))
+            self.database.add_game(
+                appid,
+                name=name,
+                last_news_id=latest.get("gid"),
+                last_news_date=latest.get("date", 0),
+                last_news_title=latest.get("title"),
+            )
             await ctx.reply(
                 f"Spiel {name} ({appid}) hinzugefügt und Basis-News gesetzt. Ich melde neue Steam-News, sobald sie erscheinen.",
                 mention_author=False,
@@ -398,36 +560,15 @@ class SteamTracker(commands.Cog):
             appid = app["appid"]
             game_name = app.get("name") or appid
 
-        latest = await self.fetch_latest_news(appid)
+        latest = await self.find_latest_relevant_update({"appid": appid, "last_news_id": "", "last_news_date": 0})
         if not latest:
             await ctx.reply(
-                "Es wurden keine aktuellen Steam-News gefunden oder die Steam-API konnte nicht erreicht werden.",
+                "Es wurden keine aktuellen update-relevanten Steam-News gefunden oder die Steam-API konnte nicht erreicht werden.",
                 mention_author=False,
             )
             return
 
-        link = self.get_news_url(latest, appid)
-        embed = discord.Embed(
-            title=f"Neueste Steam-News: {game_name}",
-            description=latest.get("title", "Neue News verfügbar."),
-            color=0x1B2838,
-        )
-        self.safe_set_embed_url(embed, link)
-        embed.add_field(name="AppID", value=appid, inline=True)
-        embed.add_field(
-            name="Published",
-            value=f"<t:{latest.get('date')}:f>" if latest.get("date") else "Unbekannt",
-            inline=True,
-        )
-        embed.add_field(
-            name="Size",
-            value=self.format_update_size(latest.get("size") or latest.get("bytes")),
-            inline=True,
-        )
-        image = self.extract_news_image(latest)
-        if image:
-            embed.set_thumbnail(url=image)
-        embed.add_field(name="Link", value=self.format_link_field(link), inline=False)
+        embed = self.build_update_embed({"appid": appid, "name": game_name}, latest)
         try:
             await ctx.send(embed=embed)
         except discord.HTTPException as error:
@@ -510,42 +651,26 @@ class SteamTracker(commands.Cog):
 
         updates = []
         for game in tracked_games:
-            latest = await self.fetch_latest_news(game["appid"])
+            latest = await self.find_latest_relevant_update(game)
             if not latest:
                 continue
 
             stored_last_id = game["last_news_id"]
-            if stored_last_id and latest["gid"] != stored_last_id and latest["date"] > (game["last_news_date"] or 0):
-                self.database.update_game_news(game["appid"], latest["gid"], latest["date"], latest.get("title"))
+            if stored_last_id and self.is_news_new_for_game(latest, game):
+                self.database.update_game_news(
+                    game["appid"],
+                    latest.get("gid"),
+                    latest.get("date", 0),
+                    last_news_title=latest.get("title"),
+                )
                 updates.append((game, latest))
 
         if not updates:
-            await ctx.reply("Keine neuen Steam-News für die verfolgten Spiele gefunden.", mention_author=False)
+            await ctx.reply("Keine neuen update-relevanten Steam-News für die verfolgten Spiele gefunden.", mention_author=False)
             return
 
         for game, latest in updates:
-            link = self.get_news_url(latest, game["appid"])
-            embed = discord.Embed(
-                title=f"Steam update: {game.get('name') or game['appid']}",
-                description=latest.get("title", "Neue News verfügbar."),
-                color=0x1B2838,
-            )
-            self.safe_set_embed_url(embed, link)
-            embed.add_field(name="AppID", value=game["appid"], inline=True)
-            embed.add_field(
-                name="Published",
-                value=f"<t:{latest.get('date')}:f>" if latest.get('date') else "Unbekannt",
-                inline=True,
-            )
-            embed.add_field(
-                name="Size",
-                value=self.format_update_size(latest.get("size") or latest.get("bytes")),
-                inline=True,
-            )
-            image = self.extract_news_image(latest)
-            if image:
-                embed.set_thumbnail(url=image)
-            embed.add_field(name="Link", value=self.format_link_field(link), inline=False)
+            embed = self.build_update_embed(game, latest)
             try:
                 await ctx.send(embed=embed)
             except discord.HTTPException as error:

@@ -15,7 +15,8 @@ class SteamDatabase:
                 appid TEXT PRIMARY KEY,
                 name TEXT,
                 last_news_id TEXT,
-                last_news_date INTEGER
+                last_news_date INTEGER,
+                last_news_title TEXT
             )
             """
         )
@@ -27,6 +28,10 @@ class SteamDatabase:
             )
             """
         )
+        cursor.execute("PRAGMA table_info(tracked_games)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "last_news_title" not in columns:
+            cursor.execute("ALTER TABLE tracked_games ADD COLUMN last_news_title TEXT")
         self.connection.commit()
 
     def add_game(
@@ -35,11 +40,12 @@ class SteamDatabase:
         name: Optional[str] = None,
         last_news_id: Optional[str] = None,
         last_news_date: int = 0,
+        last_news_title: Optional[str] = None,
     ) -> None:
         cursor = self.connection.cursor()
         cursor.execute(
-            "INSERT OR REPLACE INTO tracked_games (appid, name, last_news_id, last_news_date) VALUES (?, ?, ?, ?)",
-            (appid, name or "", last_news_id, last_news_date),
+            "INSERT OR REPLACE INTO tracked_games (appid, name, last_news_id, last_news_date, last_news_title) VALUES (?, ?, ?, ?, ?)",
+            (appid, name or "", last_news_id, last_news_date, last_news_title),
         )
         self.connection.commit()
 
@@ -72,12 +78,13 @@ class SteamDatabase:
         appid: str,
         last_news_id: Optional[str],
         last_news_date: int,
+        last_news_title: Optional[str] = None,
         name: Optional[str] = None,
     ) -> None:
         cursor = self.connection.cursor()
         cursor.execute(
-            "UPDATE tracked_games SET last_news_id = ?, last_news_date = ?, name = COALESCE(NULLIF(?, ''), name) WHERE appid = ?",
-            (last_news_id, last_news_date, name or "", appid),
+            "UPDATE tracked_games SET last_news_id = ?, last_news_date = ?, last_news_title = COALESCE(NULLIF(?, ''), last_news_title), name = COALESCE(NULLIF(?, ''), name) WHERE appid = ?",
+            (last_news_id, last_news_date, last_news_title or "", name or "", appid),
         )
         self.connection.commit()
 
