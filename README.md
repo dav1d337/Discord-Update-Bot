@@ -43,6 +43,17 @@ python bot.py
 - `!removechannel` — Entfernt den festen Benachrichtigungskanal und nutzt wieder den Standardkanal.
 - `!checkupdates` — Checks Steam news manually for tracked games.
 
+
+**Setup:**
+1. Go to **Settings → Secrets and variables → Actions** in your repository.
+2. Add the following repository secrets:
+   - `DISCORD_TOKEN` — your Discord bot token
+   - `STEAM_API_KEY` — your Steam API key
+3. Enable Actions if they are not already active (**Settings → Actions → General**).
+4. The bot will start automatically on the next scheduled trigger, or you can start it immediately via **Actions → Run Discord Bot → Run workflow**.
+
+> **Note:** GitHub Actions minutes are free for public repositories. For private repositories the free tier provides 2 000 minutes/month; continuous operation (~720 h/month) will exceed that and incur charges.
+
 ## Notes
 
 - The bot will send update notifications to the first available text channel in each guild.
