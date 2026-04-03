@@ -616,9 +616,36 @@ class SteamTracker(commands.Cog):
             await ctx.reply("Es sind derzeit keine Spiele in der Verfolgung.", mention_author=False)
             return
 
-        lines = [f"{game['appid']} — {game.get('name') or 'Unbekannt'}" for game in games]
-        message = "Verfolgte Spiele:\n" + "\n".join(lines)
-        await ctx.reply(message, mention_author=False)
+        embeds = []
+        for game in games:
+            embed = discord.Embed(
+                title=game.get("name") or "Unbekannt",
+                color=0x1B2838,
+            )
+            embed.add_field(name="AppID", value=game["appid"], inline=True)
+            embed.add_field(name="Last News ID", value=game.get("last_news_id") or "—", inline=True)
+            embed.add_field(
+                name="Last News Date",
+                value=self.format_news_date(game.get("last_news_date")),
+                inline=True,
+            )
+            embed.add_field(name="Last News Title", value=game.get("last_news_title") or "—", inline=False)
+            embeds.append(embed)
+
+        # Discord allows up to 10 embeds per message
+        chunk_size = 10
+        first_chunk = True
+        for i in range(0, len(embeds), chunk_size):
+            chunk = embeds[i : i + chunk_size]
+            if first_chunk:
+                await ctx.reply(
+                    f"Verfolgte Spiele ({len(games)}):",
+                    embeds=chunk,
+                    mention_author=False,
+                )
+                first_chunk = False
+            else:
+                await ctx.send(embeds=chunk)
 
     @commands.command(name="setchannel")
     async def set_channel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
