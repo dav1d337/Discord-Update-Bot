@@ -33,6 +33,24 @@ class SteamDatabase:
         if "last_news_title" not in columns:
             cursor.execute("ALTER TABLE tracked_games ADD COLUMN last_news_title TEXT")
         self.connection.commit()
+        self.seed_games()
+
+    def seed_games(self) -> None:
+        seeds = [
+            ("1677280", "Company of Heroes 3"),
+            ("1808500", "ARC Raiders"),
+            ("2183900", "Warhammer 40,000: Space Marine 2"),
+            ("2225070", "Trackmania"),
+            ("2868840", "Slay the Spire 2"),
+            ("3008130", "Dying Light: The Beast Restored"),
+            ("3274580", "Anno 117"),
+        ]
+        cursor = self.connection.cursor()
+        cursor.executemany(
+            "INSERT OR IGNORE INTO tracked_games (appid, name) VALUES (?, ?)",
+            seeds,
+        )
+        self.connection.commit()
 
     def add_game(
         self,
@@ -79,12 +97,11 @@ class SteamDatabase:
         last_news_id: Optional[str],
         last_news_date: int,
         last_news_title: Optional[str] = None,
-        name: Optional[str] = None,
     ) -> None:
         cursor = self.connection.cursor()
         cursor.execute(
-            "UPDATE tracked_games SET last_news_id = ?, last_news_date = ?, last_news_title = COALESCE(NULLIF(?, ''), last_news_title), name = COALESCE(NULLIF(?, ''), name) WHERE appid = ?",
-            (last_news_id, last_news_date, last_news_title or "", name or "", appid),
+            "UPDATE tracked_games SET last_news_id = ?, last_news_date = ?, last_news_title = COALESCE(NULLIF(?, ''), last_news_title) WHERE appid = ?",
+            (last_news_id, last_news_date, last_news_title or "", appid),
         )
         self.connection.commit()
 
